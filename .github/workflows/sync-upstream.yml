@@ -1,0 +1,240 @@
+name: Weekly upstream sync
+
+# Safe weekly sync of upstream Meetily into the durable feature branch.
+#
+# Guarantees (see docs/localai-qwen-asr.md "Upstream sync"):
+# - Never merges, pushes or force-pushes the feature branch itself.
+# - No auto-merge of the created PRs (first 4 weekly syncs stay manual-review;
+#   auto-merge may be proposed later as a separate, explicitly approved change).
+# - On merge conflict: abort, fail, list conflicted files and SHAs in the job
+#   summary. No ours/theirs resolution, no issue creation.
+# - The sync branch is pushed and the PR opened ONLY after every check passes.
+#
+# NOTE: this file must live on the repository's DEFAULT branch for the
+# `schedule` trigger to fire (GitHub runs scheduled workflows from the default
+# branch only).
+
+on:
+  schedule:
+    - cron: "17 2 * * 0" # every Sunday 02:17 UTC
+  workflow_dispatch:
+
+concurrency:
+  group: upstream-sync
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  pull-requests: write
+
+env:
+  UPSTREAM_REPO: Zackriya-Solutions/meetily
+  FEATURE_BRANCH: feat/localai-qwen3-asr
+  PNPM_VERSION: "9.15.9"
+
+jobs:
+  sync:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout feature branch (full history)
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.FEATURE_BRANCH }}
+          fetch-depth: 0
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: frontend/src-tauri
+
+      - name: Resolve upstream default branch and SHAs
+        id: shas
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          DEFAULT_BRANCH=$(gh api "repos/$UPSTREAM_REPO" --jq .default_branch)
+          git remote add upstream "https://github.com/$UPSTREAM_REPO.git"
+          git fetch upstream --prune --no-tags
+          UPSTREAM_SHA=$(git rev-parse "upstream/$DEFAULT_BRANCH")
+          FEATURE_SHA=$(git rev-parse "origin/$FEATURE_BRANCH")
+          MERGE_BASE=$(git merge-base "$UPSTREAM_SHA" "$FEATURE_SHA")
+          {
+            echo "default_branch=$DEFAULT_BRANCH"
+            echo "upstream=$UPSTREAM_SHA"
+            echo "feature=$FEATURE_SHA"
+            echo "merge_base=$MERGE_BASE"
+          } >> "$GITHUB_OUTPUT"
+          {
+            echo "## Upstream sync run"
+            echo "- Upstream: https://github.com/$UPSTREAM_REPO (branch \`$DEFAULT_BRANCH\`)"
+            echo "- Upstream SHA: \`$UPSTREAM_SHA\`"
+            echo "- Feature SHA (\`$FEATURE_BRANCH\`): \`$FEATURE_SHA\`"
+            echo "- Run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Check for upstream changes
+        id: decide
+        shell: bash
+        run: |
+          set -euo pipefail
+          if git merge-base --is-ancestor \
+            "${{ steps.shas.outputs.upstream }}" \
+            "${{ steps.shas.outputs.feature }}"; then
+            echo "No upstream changes to synchronize." >> "$GITHUB_STEP_SUMMARY"
+            echo "proceed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "Upstream has new commits; preparing a reviewable sync branch." >> "$GITHUB_STEP_SUMMARY"
+            echo "proceed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      # ---------------------------------------------------------------- merge
+      - name: Create sync branch and merge upstream
+        if: steps.decide.outputs.proceed == 'true'
+        id: branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          DATE=$(date -u +%F)
+          NAME="sync/upstream-main-$DATE"
+          if [ -n "$(git ls-remote --heads origin "$NAME")" ]; then
+            NAME="$NAME-run-$GITHUB_RUN_NUMBER"
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -b "$NAME" "origin/$FEATURE_BRANCH"
+          echo "name=$NAME" >> "$GITHUB_OUTPUT"
+
+          if ! git merge --no-ff \
+              "upstream/${{ steps.shas.outputs.default_branch }}" \
+              -m "chore(sync): merge upstream main $DATE"; then
+            {
+              echo "## ⚠️ Upstream sync ABORTED: merge conflicts"
+              echo ""
+              echo "No branch was pushed and no PR was created. Conflicts must be"
+              echo "resolved manually (never \`-X ours\` / \`-X theirs\`)."
+              echo ""
+              echo "- Upstream SHA: \`${{ steps.shas.outputs.upstream }}\`"
+              echo "- Feature SHA: \`${{ steps.shas.outputs.feature }}\`"
+              echo "- Sync timestamp: $(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+              echo "- Run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+              echo ""
+              echo "### Conflicted files"
+              git diff --name-only --diff-filter=U | sed 's/^/- `/; s/$/`/'
+            } >> "$GITHUB_STEP_SUMMARY"
+            git merge --abort
+            exit 1
+          fi
+
+      # --------------------------------------------------------------- checks
+      - name: Install frontend dependencies (lockfile-frozen)
+        if: steps.decide.outputs.proceed == 'true'
+        working-directory: frontend
+        shell: bash
+        run: pnpm install --frozen-lockfile
+
+      - name: TypeScript check
+        if: steps.decide.outputs.proceed == 'true'
+        working-directory: frontend
+        shell: bash
+        run: npx tsc --noEmit
+
+      - name: Rust check (cargo check)
+        if: steps.decide.outputs.proceed == 'true'
+        working-directory: frontend/src-tauri
+        shell: bash
+        run: cargo check --quiet
+
+      - name: Rust unit tests (remote ASR provider)
+        if: steps.decide.outputs.proceed == 'true'
+        working-directory: frontend/src-tauri
+        shell: bash
+        run: cargo test --quiet remote_whisper
+
+      - name: LocalAI/Qwen3-ASR regression + docs check
+        if: steps.decide.outputs.proceed == 'true'
+        shell: bash
+        run: bash scripts/check-localai-qwen-asr.sh
+
+      # ---------------------------------------------------- push branch + PR
+      - name: Push sync branch
+        if: steps.decide.outputs.proceed == 'true'
+        shell: bash
+        run: git push origin "${{ steps.branch.outputs.name }}"
+
+      - name: Create sync pull request
+        if: steps.decide.outputs.proceed == 'true'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          DATE=$(date -u +%F)
+          BRANCH="${{ steps.branch.outputs.name }}"
+          BODY_FILE=$(mktemp)
+          UPSTREAM_LOG=$(git log --oneline "${{ steps.shas.outputs.merge_base }}..${{ steps.shas.outputs.upstream }}")
+          DIFF_STAT=$(git diff --stat "${{ steps.shas.outputs.feature }}...HEAD" | tail -n 20)
+          cat > "$BODY_FILE" <<EOF
+          ## Upstream sync $DATE
+
+          - **Upstream repository:** https://github.com/${{ env.UPSTREAM_REPO }}
+          - **Upstream base branch:** \`${{ steps.shas.outputs.default_branch }}\`
+          - **Upstream SHA:** \`${{ steps.shas.outputs.upstream }}\`
+          - **Previous feature branch SHA:** \`${{ steps.shas.outputs.feature }}\`
+          - **Sync branch SHA:** \`${{ github.sha }}\`
+          - **Run:** $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID
+
+          ### Upstream commits
+
+          \`\`\`
+          $UPSTREAM_LOG
+          \`\`\`
+
+          ### Diff summary (vs feature branch)
+
+          \`\`\`
+          $DIFF_STAT
+          \`\`\`
+
+          ### Checks (all required to pass before this PR was created)
+
+          - pnpm install --frozen-lockfile ✅
+          - TypeScript check (tsc --noEmit) ✅
+          - Rust check (cargo check) ✅
+          - Rust unit tests (remote ASR provider) ✅
+          - LocalAI/Qwen3-ASR regression + docs check ✅
+
+          ## LocalAI/Qwen3-ASR regression protection
+
+          | Check | Result |
+          |---|---|
+          | Remote provider present | PASS |
+          | Endpoint contract present | PASS |
+          | /v1/audio/transcriptions | PASS |
+          | Qwen model configuration | PASS |
+          | Documentation present | PASS |
+          | Windows Rust build (cargo check) | PASS |
+
+          > Auto-merge is intentionally **disabled** for upstream sync PRs.
+          > Review manually, then merge. On conflict in a future run the workflow
+          > aborts and reports conflicted files instead of auto-resolving.
+          EOF
+          gh pr create \
+            --base "$FEATURE_BRANCH" \
+            --head "$BRANCH" \
+            --title "chore(sync): merge upstream main $DATE" \
+            --body-file "$BODY_FILE"
