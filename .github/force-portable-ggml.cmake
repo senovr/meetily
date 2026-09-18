@@ -10,6 +10,10 @@ set(GGML_NATIVE OFF CACHE BOOL "Build without host CPU specialization" FORCE)
 # driver can JIT for anything newer.
 set(CMAKE_CUDA_ARCHITECTURES "80;86;89;90;90-virtual" CACHE STRING "CUDA architectures" FORCE)
 
+# CUDA 13's CCCL (cub/thrust) refuses C++14 device/host dialects — the build
+# must target C++17 for the CUDA language while ggml's C++ side stays as-is.
+set(CMAKE_CUDA_STANDARD 17 CACHE STRING "CUDA C++ standard" FORCE)
+
 # CUDA 13's CCCL headers (#error in cccl/preprocessor.h) refuse MSVC's
 # traditional preprocessor. nvcc forwards the flag to cl.exe host passes via
 # -Xcompiler; generator-expression scoping keeps it off plain C/C++ targets
