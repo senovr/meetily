@@ -42,7 +42,11 @@ env:
 jobs:
   build-windows:
     name: Build Windows (x64, ${{ matrix.gpu }})
-    runs-on: windows-latest
+    # CUDA 13.x nvcc does not support the VS 2026 toolchain on windows-latest
+    # (windows-2025 image) yet — the CUDA compiler-id check fails with an empty
+    # compiler. The CUDA job therefore pins windows-2022 (VS 2022, officially
+    # supported by CUDA 13); Vulkan stays on windows-latest.
+    runs-on: ${{ matrix.gpu == 'cuda' && 'windows-2022' || 'windows-latest' }}
     permissions:
       contents: write
     strategy:
