@@ -9,3 +9,9 @@ set(GGML_NATIVE OFF CACHE BOOL "Build without host CPU specialization" FORCE)
 # Ampere/Turing/Ada/Hopper fatbins plus embedded PTX (90-virtual) that the
 # driver can JIT for anything newer.
 set(CMAKE_CUDA_ARCHITECTURES "80;86;89;90;90-virtual" CACHE STRING "CUDA architectures" FORCE)
+
+# CUDA 13's CCCL headers (#error in cccl/preprocessor.h) refuse MSVC's
+# traditional preprocessor. nvcc forwards the flag to cl.exe host passes via
+# -Xcompiler; generator-expression scoping keeps it off plain C/C++ targets
+# (cl there already gets /Zc from the standard MSVC toolchain flags).
+add_compile_options("$<$<COMPILE_LANGUAGE:CUDA>:-Xcompiler=/Zc:preprocessor>")
