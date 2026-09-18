@@ -605,6 +605,13 @@ jobs:
 
           "CUDA_PATH=$($kit.FullPath)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           "$($kit.FullPath)\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          # The CUDA MSBuild integration ("CUDA <ver>.targets" in VS) resolves
+          # CudaToolkitDir from registry keys the Chocolatey install does not
+          # write, then fails with "The CUDA Toolkit directory '' does not
+          # exist". MSBuild imports environment variables as properties, and
+          # the CUDA props only assign CudaToolkitDir when it is empty — so an
+          # env var wins over the broken registry lookup.
+          "CudaToolkitDir=$($kit.FullPath)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           $env:CUDA_PATH = $kit.FullPath
           Write-Host "CUDA_PATH=$($kit.FullPath)"
           & "$($kit.FullPath)\bin\nvcc.exe" --version
