@@ -35,6 +35,9 @@ concurrency:
 env:
   RUST_BACKTRACE: 1
   CARGO_TERM_COLOR: always
+  # Mirror of the DigiCert secret for step-level `if` guards (the secrets
+  # context is not allowed in step conditions; the env context is).
+  SM_API_KEY: ${{ secrets.SM_API_KEY }}
 
 jobs:
   build-windows:
@@ -78,7 +81,7 @@ jobs:
           fi
 
       - name: Code signing availability notice
-        if: ${{ github.event.inputs.sign-build == 'true' && secrets.SM_API_KEY == '' }}
+        if: ${{ github.event.inputs.sign-build == 'true' && env.SM_API_KEY == '' }}
         shell: pwsh
         run: |
           Write-Warning "sign-build was requested, but no DigiCert KeyLocker secrets (SM_API_KEY etc.) are configured on this fork."
@@ -86,7 +89,7 @@ jobs:
           Write-Warning "Updater .sig artifacts are still produced with the fork's own TAURI_SIGNING_PRIVATE_KEY."
 
       - name: Setup DigiCert Environment
-        if: ${{ github.event.inputs.sign-build == 'true' && secrets.SM_API_KEY != '' }}
+        if: ${{ github.event.inputs.sign-build == 'true' && env.SM_API_KEY != '' }}
         shell: pwsh
         run: |
           # Set environment variables
@@ -129,11 +132,11 @@ jobs:
           "SM_CLIENT_CERT_FILE=D:\Certificate_pkcs12.p12" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
       - name: Setup DigiCert KeyLocker
-        if: ${{ github.event.inputs.sign-build == 'true' && secrets.SM_API_KEY != '' }}
+        if: ${{ github.event.inputs.sign-build == 'true' && env.SM_API_KEY != '' }}
         uses: digicert/ssm-code-signing@v1.1.1
 
       - name: Sync Certificate to Windows Certificate Store
-        if: ${{ github.event.inputs.sign-build == 'true' && secrets.SM_API_KEY != '' }}
+        if: ${{ github.event.inputs.sign-build == 'true' && env.SM_API_KEY != '' }}
         shell: pwsh
         run: |
           Write-Host "============================================================"
@@ -213,7 +216,7 @@ jobs:
           Write-Host ""
 
       - name: Verify DigiCert Setup
-        if: ${{ github.event.inputs.sign-build == 'true' && secrets.SM_API_KEY != '' }}
+        if: ${{ github.event.inputs.sign-build == 'true' && env.SM_API_KEY != '' }}
         shell: pwsh
         run: |
           Write-Host "=== DigiCert Setup Verification ==="
@@ -258,7 +261,7 @@ jobs:
           # the signing should still work. We'll test in the pre-build signing test.
 
       - name: Pre-Build Signing Test
-        if: ${{ github.event.inputs.sign-build == 'true' && secrets.SM_API_KEY != '' && github.event.inputs.test-signing == 'true' }}
+        if: ${{ github.event.inputs.sign-build == 'true' && env.SM_API_KEY != '' && github.event.inputs.test-signing == 'true' }}
         shell: pwsh
         run: |
           Write-Host "============================================================"
