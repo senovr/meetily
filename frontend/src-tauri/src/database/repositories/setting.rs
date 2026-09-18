@@ -172,15 +172,61 @@ impl SettingsRepository {
         Ok(())
     }
 
+    /// Persist the full remote OpenAI-compatible ASR configuration.
+    ///
+    /// `base_url` goes into the `model` column (the established contract for
+    /// the `remoteWhisper` provider), while the model ID and optional API key
+    /// get their own columns so all three values survive independently.
+    /// Empty/blank `model`/`api_key` are stored as NULL.
+    pub async fn save_remote_whisper_config(
+        pool: &SqlitePool,
+        base_url: &str,
+        model: Option<&str>,
+        api_key: Option<&str>,
+    ) -> std::result::Result<(), sqlx::Error> {
+        let model = model.map(str::trim).filter(|m| !m.is_empty());
+        let api_key = api_key.map(str::trim).filter(|k| !k.is_empty());
+
+        sqlx::query(
+            r#"
+            INSERT INTO transcript_settings (id, provider, model, "remoteWhisperModel", "remoteWhisperApiKey")
+            VALUES ('1', 'remoteWhisper', $1, $2, $3)
+            ON CONFLICT(id) DO UPDATE SET
+                provider = excluded.provider,
+                model = excluded.model,
+                "remoteWhisperModel" = excluded."remoteWhisperModel",
+                "remoteWhisperApiKey" = excluded."remoteWhisperApiKey"
+            "#,
+        )
+        .bind(base_url)
+        .bind(model)
+        .bind(api_key)
+        .execute(pool)
+        .await?;
+
+        Ok(())
+    }
+
     pub async fn save_transcript_api_key(
         pool: &SqlitePool,
         provider: &str,
         api_key: &str,
     ) -> std::result::Result<(), sqlx::Error> {
+        // remoteWhisper needs a column-targeted UPDATE: the generic template
+        // below would clobber provider/model with parakeet defaults.
+        if provider == "remoteWhisper" {
+            sqlx::query(
+                r#"UPDATE transcript_settings SET "remoteWhisperApiKey" = $1 WHERE id = '1'"#,
+            )
+            .bind(api_key)
+            .execute(pool)
+            .await?;
+            return Ok(());
+        }
+
         let api_key_column = match provider {
             "localWhisper" => "whisperApiKey",
             "parakeet" => return Ok(()), // Parakeet doesn't need an API key, return early
-            "remoteWhisper" => return Ok(()), // Self-hosted server, no API key
             "deepgram" => "deepgramApiKey",
             "elevenLabs" => "elevenLabsApiKey",
             "groq" => "groqApiKey",
@@ -213,7 +259,7 @@ impl SettingsRepository {
         let api_key_column = match provider {
             "localWhisper" => "whisperApiKey",
             "parakeet" => return Ok(None), // Parakeet doesn't need an API key
-            "remoteWhisper" => return Ok(None), // Self-hosted server, no API key
+            "remoteWhisper" => "remoteWhisperApiKey", // Optional bearer token for the remote ASR server
             "deepgram" => "deepgramApiKey",
             "elevenLabs" => "elevenLabsApiKey",
             "groq" => "groqApiKey",

@@ -35,6 +35,10 @@ interface TranscriptConfig {
   provider?: string;
   /** For `remoteWhisper` this carries the server base URL, not a model name. */
   model?: string;
+  /** Model ID for `remoteWhisper` (e.g. "qwen3-asr-1.7b" on LocalAI). */
+  remoteModel?: string | null;
+  /** Optional bearer token for `remoteWhisper`. */
+  apiKey?: string | null;
 }
 
 interface TranscriptionReadiness {
@@ -43,6 +47,7 @@ interface TranscriptionReadiness {
     | 'downloading'
     | 'missing-local-model'
     | 'remote-unreachable'
+    | 'remote-model-missing'
     | 'unsupported-provider';
   serverUrl?: string;
   provider?: string;
@@ -95,6 +100,8 @@ export function useRecordingStart(
       return {
         provider: config?.provider || DEFAULT_PROVIDER,
         model: config?.model ?? '',
+        remoteModel: config?.remoteModel ?? null,
+        apiKey: config?.apiKey ?? null,
       };
     } catch (error) {
       // Fall back to the local engine: a config read failure must not silently
@@ -106,21 +113,32 @@ export function useRecordingStart(
 
   /**
    * A remote server owns its own model lifecycle, so "ready" means reachable —
-   * there is nothing on disk to check.
+   * there is nothing on disk to check. When a model ID is configured, a server
+   * that answers but does not serve that model is NOT ready (LocalAI would
+   * reject every transcription request with "model not found").
    */
   const checkRemoteServerReady = useCallback(
-    async (serverUrl: string): Promise<TranscriptionReadiness> => {
+    async (serverUrl: string, remoteModel?: string | null, apiKey?: string | null): Promise<TranscriptionReadiness> => {
       if (!serverUrl) {
         return { ready: false, reason: 'remote-unreachable', serverUrl: '' };
       }
 
       try {
-        const reachable = await invoke<boolean>('remote_whisper_check_health', {
-          baseUrl: serverUrl,
-        });
-        return reachable
-          ? { ready: true }
-          : { ready: false, reason: 'remote-unreachable', serverUrl };
+        const report = await invoke<{ reachable: boolean; modelFound: boolean | null }>(
+          'remote_whisper_check_health',
+          {
+            baseUrl: serverUrl,
+            model: remoteModel || null,
+            apiKey: apiKey || null,
+          },
+        );
+        if (!report.reachable) {
+          return { ready: false, reason: 'remote-unreachable', serverUrl };
+        }
+        if (report.modelFound === false) {
+          return { ready: false, reason: 'remote-model-missing', serverUrl, provider: remoteModel || undefined };
+        }
+        return { ready: true };
       } catch (error) {
         console.error('Remote transcription server health check failed:', error);
         return { ready: false, reason: 'remote-unreachable', serverUrl };
@@ -174,11 +192,16 @@ export function useRecordingStart(
    * command validates the same provider again before capture.
    */
   const checkTranscriptionReady = useCallback(async (): Promise<TranscriptionReadiness> => {
-    const { provider = DEFAULT_PROVIDER, model = '' } = await getTranscriptConfig();
+    const {
+      provider = DEFAULT_PROVIDER,
+      model = '',
+      remoteModel = null,
+      apiKey = null,
+    } = await getTranscriptConfig();
 
     if (provider === REMOTE_WHISPER_PROVIDER) {
       // The `model` column carries the server base URL for this provider.
-      return checkRemoteServerReady(model.trim());
+      return checkRemoteServerReady(model.trim(), remoteModel, apiKey);
     }
 
     return checkLocalModelReady(provider);
@@ -209,6 +232,17 @@ export function useRecordingStart(
           duration: 6000,
         });
         Analytics.trackButtonClick('start_recording_blocked_remote_unreachable', source);
+        return;
+      }
+
+      if (readiness.reason === 'remote-model-missing') {
+        // The server answered but does not serve the configured model ID —
+        // every transcription request would fail with "model not found".
+        toast.error('Transcription model not found on server', {
+          description: `"${readiness.provider}" is not served by ${readiness.serverUrl}. Check the model ID in Settings > Transcription.`,
+          duration: 6000,
+        });
+        Analytics.trackButtonClick('start_recording_blocked_remote_model_missing', source);
         return;
       }
 

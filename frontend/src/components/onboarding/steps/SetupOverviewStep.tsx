@@ -13,7 +13,7 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 
-type ProbeState = 'idle' | 'checking' | 'reachable' | 'unreachable';
+type ProbeState = 'idle' | 'checking' | 'reachable' | 'model-missing' | 'unreachable';
 
 export function SetupOverviewStep() {
   const {
@@ -22,6 +22,8 @@ export function SetupOverviewStep() {
     setTranscriptionMode,
     remoteTranscriptionUrl,
     setRemoteTranscriptionUrl,
+    remoteTranscriptionModel,
+    setRemoteTranscriptionModel,
     summaryMode,
     setSummaryMode,
   } = useOnboarding();
@@ -43,27 +45,42 @@ export function SetupOverviewStep() {
     checkPlatform();
   }, []);
 
-  // A URL edit invalidates any previous probe result: never let a stale green
-  // check authorise a URL the user has since changed.
+  // A URL or model edit invalidates any previous probe result: never let a
+  // stale green check authorise values the user has since changed.
   useEffect(() => {
     setProbe('idle');
     setProbeError(null);
-  }, [remoteTranscriptionUrl]);
+  }, [remoteTranscriptionUrl, remoteTranscriptionModel]);
 
   const usesRemoteTranscription = transcriptionMode === 'remote';
   const trimmedUrl = remoteTranscriptionUrl.trim();
+  const trimmedModel = remoteTranscriptionModel.trim();
 
   const testRemoteServer = async () => {
     if (!trimmedUrl) return;
     setProbe('checking');
     setProbeError(null);
     try {
-      const reachable = await invoke<boolean>('remote_whisper_check_health', {
-        baseUrl: trimmedUrl,
-      });
-      setProbe(reachable ? 'reachable' : 'unreachable');
-      if (!reachable) {
+      const report = await invoke<{ reachable: boolean; modelFound: boolean | null }>(
+        'remote_whisper_check_health',
+        {
+          baseUrl: trimmedUrl,
+          model: trimmedModel || null,
+          apiKey: null,
+        },
+      );
+      if (!report.reachable) {
+        setProbe('unreachable');
         setProbeError('The server did not respond to a health check.');
+      } else if (report.modelFound === false) {
+        setProbe('model-missing');
+        setProbeError(
+          trimmedModel
+            ? `Model "${trimmedModel}" was not found on this server.`
+            : 'The configured model was not found on this server.',
+        );
+      } else {
+        setProbe('reachable');
       }
     } catch (error) {
       setProbe('unreachable');
@@ -72,7 +89,8 @@ export function SetupOverviewStep() {
   };
 
   // Downloads are irreversible in practice (hundreds of MB), so a remote setup
-  // must be proven reachable before we let the user leave this step.
+  // must be proven reachable (and, when a model is named, actually served)
+  // before we let the user leave this step.
   const canContinue = !usesRemoteTranscription || probe === 'reachable';
 
   const steps = [
@@ -203,7 +221,7 @@ export function SetupOverviewStep() {
                         type="text"
                         value={remoteTranscriptionUrl}
                         onChange={(e) => setRemoteTranscriptionUrl(e.target.value)}
-                        placeholder="http://192.168.1.100:8093"
+                        placeholder="http://127.0.0.1:8080"
                         className="flex-1 focus:ring-1 focus:ring-blue-500 focus:border-blue-500"
                       />
                       <Button
@@ -221,9 +239,27 @@ export function SetupOverviewStep() {
                       </Button>
                     </div>
 
+                    <Label className="block text-xs font-medium text-gray-700 pt-1">
+                      Model (required for LocalAI)
+                    </Label>
+                    <Input
+                      type="text"
+                      value={remoteTranscriptionModel}
+                      onChange={(e) => setRemoteTranscriptionModel(e.target.value)}
+                      placeholder="qwen3-asr-1.7b"
+                      className="focus:ring-1 focus:ring-blue-500 focus:border-blue-500"
+                    />
+
                     {probe === 'reachable' && (
                       <p className="flex items-center gap-1.5 text-xs text-green-600">
-                        <Check className="w-3.5 h-3.5" /> Server is reachable.
+                        <Check className="w-3.5 h-3.5" /> Server is reachable
+                        {trimmedModel ? ' · model found' : ''}.
+                      </p>
+                    )}
+                    {probe === 'model-missing' && (
+                      <p className="flex items-start gap-1.5 text-xs text-amber-600">
+                        <AlertCircle className="w-3.5 h-3.5 mt-0.5 shrink-0" />
+                        <span>{probeError || 'Model not found on this server.'}</span>
                       </p>
                     )}
                     {probe === 'unreachable' && (
@@ -236,7 +272,11 @@ export function SetupOverviewStep() {
                     <p className="text-xs text-gray-500">
                       Base URL of an OpenAI-compatible{' '}
                       <code>/v1/audio/transcriptions</code> server, for example a
-                      self-hosted faster-whisper instance. No API key required.
+                      self-hosted faster-whisper instance or LocalAI. Both{' '}
+                      <code>http://host:port</code> and{' '}
+                      <code>http://host:port/v1</code> are accepted. Set the model
+                      ID for LocalAI (e.g. <code>qwen3-asr-1.7b</code>); an optional
+                      API key can be added later in Settings.
                     </p>
                   </div>
                 )}

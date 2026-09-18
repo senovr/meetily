@@ -13,6 +13,8 @@ export interface TranscriptModelProps {
     provider: 'localWhisper' | 'parakeet' | 'remoteWhisper' | 'deepgram' | 'elevenLabs' | 'groq' | 'openai';
     model: string;
     apiKey?: string | null;
+    /** Model ID for the remoteWhisper provider (e.g. "qwen3-asr-1.7b" on LocalAI). */
+    remoteModel?: string | null;
 }
 
 export interface TranscriptSettingsProps {
@@ -35,8 +37,15 @@ export function TranscriptSettings({ transcriptModelConfig, setTranscriptModelCo
     );
     const [serverUrlStatus, setServerUrlStatus] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
     const [serverUrlError, setServerUrlError] = useState<string | null>(null);
-    const [healthCheckStatus, setHealthCheckStatus] = useState<'idle' | 'checking' | 'reachable' | 'unreachable' | 'error'>('idle');
+    const [healthCheckStatus, setHealthCheckStatus] = useState<'idle' | 'checking' | 'reachable' | 'model-missing' | 'unreachable' | 'error'>('idle');
     const [healthCheckError, setHealthCheckError] = useState<string | null>(null);
+    // Remote ASR model ID (multipart `model` field) and optional bearer token.
+    const [remoteModelDraft, setRemoteModelDraft] = useState<string>(
+        transcriptModelConfig.provider === 'remoteWhisper' ? (transcriptModelConfig.remoteModel || '') : ''
+    );
+    const [remoteApiKeyDraft, setRemoteApiKeyDraft] = useState<string>(
+        transcriptModelConfig.provider === 'remoteWhisper' ? (transcriptModelConfig.apiKey || '') : ''
+    );
 
     // Mirrors the latest transcriptModelConfig without pulling it into the
     // provider-switch effect's dependency array (same pattern as WhisperModelManager's autoSaveRef).
@@ -59,6 +68,8 @@ export function TranscriptSettings({ transcriptModelConfig, setTranscriptModelCo
         }
         const current = transcriptModelConfigRef.current;
         setServerUrlDraft(current.provider === 'remoteWhisper' ? current.model : '');
+        setRemoteModelDraft(current.provider === 'remoteWhisper' ? (current.remoteModel || '') : '');
+        setRemoteApiKeyDraft(current.provider === 'remoteWhisper' ? (current.apiKey || '') : '');
         setServerUrlStatus('idle');
         setServerUrlError(null);
         setHealthCheckStatus('idle');
@@ -134,12 +145,15 @@ export function TranscriptSettings({ transcriptModelConfig, setTranscriptModelCo
     const isServerUrlPersisted = transcriptModelConfig.provider === 'remoteWhisper' && transcriptModelConfig.model === trimmedServerUrl;
     const isServerUrlSaveDisabled = !trimmedServerUrl || !isValidServerUrl(trimmedServerUrl) || isServerUrlPersisted || serverUrlStatus === 'saving';
 
-    // Persists the Remote Whisper server URL. Shared by the Save button, blur, and Enter
-    // so validation/skip-if-unchanged logic lives in one place. The "model" field is
-    // repurposed to hold the base URL for this provider (see engine.rs), which is the
-    // existing backend contract.
+    // Persists the Remote Whisper configuration (URL + model ID + optional API
+    // key). Shared by the Save button, blur, and Enter so validation /
+    // skip-if-unchanged logic lives in one place. The "model" field is
+    // repurposed to hold the base URL for this provider (see engine.rs), which
+    // is the existing backend contract; the ASR model ID goes to `remoteModel`.
     const saveServerUrl = async () => {
         const trimmed = serverUrlDraft.trim();
+        const trimmedModel = remoteModelDraft.trim();
+        const trimmedKey = remoteApiKeyDraft.trim();
 
         if (trimmed !== serverUrlDraft) {
             setServerUrlDraft(trimmed);
@@ -157,7 +171,12 @@ export function TranscriptSettings({ transcriptModelConfig, setTranscriptModelCo
             return;
         }
 
-        if (transcriptModelConfig.provider === 'remoteWhisper' && transcriptModelConfig.model === trimmed) {
+        if (
+            transcriptModelConfig.provider === 'remoteWhisper' &&
+            transcriptModelConfig.model === trimmed &&
+            (transcriptModelConfig.remoteModel || '') === trimmedModel &&
+            (transcriptModelConfig.apiKey || '') === trimmedKey
+        ) {
             // Nothing changed since the last persisted value - avoid a redundant write.
             setServerUrlStatus('saved');
             setServerUrlError(null);
@@ -170,7 +189,8 @@ export function TranscriptSettings({ transcriptModelConfig, setTranscriptModelCo
             await invoke('api_save_transcript_config', {
                 provider: 'remoteWhisper',
                 model: trimmed,
-                apiKey: null,
+                remoteModel: trimmedModel || null,
+                apiKey: trimmedKey || null,
             });
             // Keep provider in sync even if the user only re-selected remoteWhisper
             // without retyping the URL - this was the original persistence gap.
@@ -178,10 +198,12 @@ export function TranscriptSettings({ transcriptModelConfig, setTranscriptModelCo
                 ...transcriptModelConfig,
                 provider: 'remoteWhisper',
                 model: trimmed,
+                remoteModel: trimmedModel || null,
+                apiKey: trimmedKey || null,
             });
             setServerUrlStatus('saved');
         } catch (error) {
-            console.error('Failed to save remote Whisper server URL:', error);
+            console.error('Failed to save remote Whisper configuration:', error);
             setServerUrlStatus('error');
             setServerUrlError(error instanceof Error ? error.message : String(error));
         }
@@ -189,6 +211,8 @@ export function TranscriptSettings({ transcriptModelConfig, setTranscriptModelCo
 
     const testRemoteWhisperConnection = async () => {
         const trimmed = serverUrlDraft.trim();
+        const trimmedModel = remoteModelDraft.trim();
+        const trimmedKey = remoteApiKeyDraft.trim();
 
         if (!trimmed) {
             setHealthCheckStatus('error');
@@ -205,8 +229,22 @@ export function TranscriptSettings({ transcriptModelConfig, setTranscriptModelCo
         setHealthCheckStatus('checking');
         setHealthCheckError(null);
         try {
-            const reachable = await invoke('remote_whisper_check_health', { baseUrl: trimmed }) as boolean;
-            setHealthCheckStatus(reachable ? 'reachable' : 'unreachable');
+            const report = await invoke<{ reachable: boolean; modelFound: boolean | null }>(
+                'remote_whisper_check_health',
+                { baseUrl: trimmed, model: trimmedModel || null, apiKey: trimmedKey || null },
+            );
+            if (!report.reachable) {
+                setHealthCheckStatus('unreachable');
+            } else if (report.modelFound === false) {
+                setHealthCheckStatus('model-missing');
+                setHealthCheckError(
+                    trimmedModel
+                        ? `Model "${trimmedModel}" was not found on this server. Check the model ID.`
+                        : 'The configured model was not found on this server.',
+                );
+            } else {
+                setHealthCheckStatus('reachable');
+            }
         } catch (error) {
             console.error('Remote Whisper health check failed:', error);
             setHealthCheckStatus('error');
@@ -317,7 +355,59 @@ export function TranscriptSettings({ transcriptModelConfig, setTranscriptModelCo
                                         void saveServerUrl();
                                     }
                                 }}
-                                placeholder="http://192.168.1.100:8093"
+                                placeholder="http://127.0.0.1:8080 or http://192.168.1.100:8093"
+                            />
+
+                            <Label className="block text-sm font-medium text-gray-700 mb-1 mt-4">
+                                Model
+                            </Label>
+                            <Input
+                                type="text"
+                                className="mx-1 focus:ring-1 focus:ring-blue-500 focus:border-blue-500"
+                                value={remoteModelDraft}
+                                onChange={(e) => {
+                                    setRemoteModelDraft(e.target.value);
+                                    if (serverUrlStatus !== 'idle') {
+                                        setServerUrlStatus('idle');
+                                        setServerUrlError(null);
+                                    }
+                                }}
+                                onBlur={() => {
+                                    void saveServerUrl();
+                                }}
+                                onKeyDown={(e) => {
+                                    if (e.key === 'Enter') {
+                                        e.preventDefault();
+                                        void saveServerUrl();
+                                    }
+                                }}
+                                placeholder="qwen3-asr-1.7b (required for LocalAI, optional for faster-whisper)"
+                            />
+
+                            <Label className="block text-sm font-medium text-gray-700 mb-1 mt-4">
+                                API Key (optional)
+                            </Label>
+                            <Input
+                                type="password"
+                                className="mx-1 focus:ring-1 focus:ring-blue-500 focus:border-blue-500"
+                                value={remoteApiKeyDraft}
+                                onChange={(e) => {
+                                    setRemoteApiKeyDraft(e.target.value);
+                                    if (serverUrlStatus !== 'idle') {
+                                        setServerUrlStatus('idle');
+                                        setServerUrlError(null);
+                                    }
+                                }}
+                                onBlur={() => {
+                                    void saveServerUrl();
+                                }}
+                                onKeyDown={(e) => {
+                                    if (e.key === 'Enter') {
+                                        e.preventDefault();
+                                        void saveServerUrl();
+                                    }
+                                }}
+                                placeholder="localai — leave empty when the server has no auth"
                             />
 
                             <div className="mt-2 mx-1 flex items-center gap-2">
@@ -373,6 +463,12 @@ export function TranscriptSettings({ transcriptModelConfig, setTranscriptModelCo
                                 {healthCheckStatus === 'reachable' && (
                                     <p className="flex items-center gap-1 text-xs text-green-600">
                                         <CheckCircle2 className="h-3 w-3" /> Server reachable
+                                        {remoteModelDraft.trim() && ' · model found'}
+                                    </p>
+                                )}
+                                {healthCheckStatus === 'model-missing' && (
+                                    <p className="flex items-center gap-1 text-xs text-amber-600">
+                                        <XCircle className="h-3 w-3" /> {healthCheckError || 'Model not found on server'}
                                     </p>
                                 )}
                                 {healthCheckStatus === 'unreachable' && (
@@ -389,7 +485,9 @@ export function TranscriptSettings({ transcriptModelConfig, setTranscriptModelCo
 
                             <p className="mt-1 mx-1 text-xs text-gray-500">
                                 Base URL of an OpenAI-compatible <code>/v1/audio/transcriptions</code> server
-                                (e.g. a self-hosted faster-whisper instance). No API key required.
+                                (e.g. LocalAI, or a self-hosted faster-whisper instance). Both
+                                <code> http://host:port</code> and <code>http://host:port/v1</code> are accepted.
+                                API key is optional — LocalAI commonly runs without auth.
                             </p>
                         </div>
                     )}

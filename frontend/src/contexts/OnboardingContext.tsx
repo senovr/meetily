@@ -19,6 +19,7 @@ interface OnboardingStatus {
     selected_summary_model?: string;
     transcription_provider?: string;
     remote_transcription_url?: string;
+    remote_transcription_model?: string;
   };
   last_updated: string;
 }
@@ -63,6 +64,7 @@ interface OnboardingContextType {
   recommendedSummaryModel: string;
   transcriptionMode: TranscriptionMode;
   remoteTranscriptionUrl: string;
+  remoteTranscriptionModel: string;
   summaryMode: SummaryMode;
   databaseExists: boolean;
   isBackgroundDownloading: boolean;
@@ -79,6 +81,7 @@ interface OnboardingContextType {
   setSelectedSummaryModel: (value: string) => void;
   setTranscriptionMode: (value: TranscriptionMode) => void;
   setRemoteTranscriptionUrl: (value: string) => void;
+  setRemoteTranscriptionModel: (value: string) => void;
   setSummaryMode: (value: SummaryMode) => void;
   setDatabaseExists: (value: boolean) => void;
   setPermissionStatus: (permission: keyof OnboardingPermissions, status: PermissionStatus) => void;
@@ -119,6 +122,7 @@ export function OnboardingProvider({ children }: { children: React.ReactNode }) 
   const [recommendedSummaryModel, setRecommendedSummaryModel] = useState<string>('');
   const [transcriptionMode, setTranscriptionMode] = useState<TranscriptionMode>('local');
   const [remoteTranscriptionUrl, setRemoteTranscriptionUrl] = useState<string>('');
+  const [remoteTranscriptionModel, setRemoteTranscriptionModel] = useState<string>('');
   const [summaryMode, setSummaryMode] = useState<SummaryMode>('local');
   const [databaseExists, setDatabaseExists] = useState(false);
   const [isBackgroundDownloading, setIsBackgroundDownloading] = useState(false);
@@ -261,7 +265,7 @@ export function OnboardingProvider({ children }: { children: React.ReactNode }) 
     return () => {
       if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current);
     };
-  }, [currentStep, parakeetDownloaded, summaryModelDownloaded, completed, transcriptionMode, remoteTranscriptionUrl, summaryMode]);
+  }, [currentStep, parakeetDownloaded, summaryModelDownloaded, completed, transcriptionMode, remoteTranscriptionUrl, remoteTranscriptionModel, summaryMode]);
 
   // Listen to Parakeet download progress
   useEffect(() => {
@@ -375,6 +379,7 @@ export function OnboardingProvider({ children }: { children: React.ReactNode }) 
     if (status.model_status.transcription_provider === 'remoteWhisper') {
       setTranscriptionMode('remote');
       setRemoteTranscriptionUrl(status.model_status.remote_transcription_url || '');
+      setRemoteTranscriptionModel(status.model_status.remote_transcription_model || '');
     }
     if (status.model_status.summary === 'skipped') {
       setSummaryMode('external');
@@ -527,6 +532,8 @@ export function OnboardingProvider({ children }: { children: React.ReactNode }) 
               transcriptionMode === 'remote' ? 'remoteWhisper' : 'parakeet',
             remote_transcription_url:
               transcriptionMode === 'remote' ? remoteTranscriptionUrl.trim() || undefined : undefined,
+            remote_transcription_model:
+              transcriptionMode === 'remote' ? remoteTranscriptionModel.trim() || undefined : undefined,
           },
           last_updated: new Date().toISOString(),
         },
@@ -574,6 +581,7 @@ export function OnboardingProvider({ children }: { children: React.ReactNode }) 
         model: modelToSave,
         transcriptionProvider: usesRemoteTranscription ? 'remoteWhisper' : 'parakeet',
         remoteTranscriptionUrl: usesRemoteTranscription ? remoteTranscriptionUrl.trim() : null,
+        remoteTranscriptionModel: usesRemoteTranscription ? remoteTranscriptionModel.trim() || null : null,
       });
       setCompleted(true);
       console.log('[OnboardingContext] Onboarding completed', {
@@ -705,6 +713,7 @@ export function OnboardingProvider({ children }: { children: React.ReactNode }) 
         recommendedSummaryModel,
         transcriptionMode,
         remoteTranscriptionUrl,
+        remoteTranscriptionModel,
         summaryMode,
         databaseExists,
         isBackgroundDownloading,
@@ -718,6 +727,7 @@ export function OnboardingProvider({ children }: { children: React.ReactNode }) 
         setSelectedSummaryModel,
         setTranscriptionMode,
         setRemoteTranscriptionUrl,
+        setRemoteTranscriptionModel,
         setSummaryMode,
         setDatabaseExists,
         setPermissionStatus,

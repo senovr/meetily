@@ -101,6 +101,10 @@ pub struct TranscriptConfig {
     pub model: String,
     #[serde(rename = "apiKey")]
     pub api_key: Option<String>,
+    /// Model ID for the remoteWhisper provider (e.g. "qwen3-asr-1.7b").
+    /// `model` carries the server base URL for that provider.
+    #[serde(rename = "remoteModel", default)]
+    pub remote_model: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -612,6 +616,11 @@ pub async fn api_get_transcript_config<R: Runtime>(
                 &config.provider,
                 &config.model
             );
+            let remote_model = if config.provider == "remoteWhisper" {
+                config.remote_whisper_model.clone()
+            } else {
+                None
+            };
             match SettingsRepository::get_transcript_api_key(pool, &config.provider).await {
                 Ok(api_key) => {
                     log_info!("Successfully retrieved transcript config and API key.");
@@ -619,6 +628,7 @@ pub async fn api_get_transcript_config<R: Runtime>(
                         provider: config.provider,
                         model: config.model,
                         api_key,
+                        remote_model,
                     }))
                 }
                 Err(e) => {
@@ -637,6 +647,7 @@ pub async fn api_get_transcript_config<R: Runtime>(
                 provider: "parakeet".to_string(),
                 model: crate::config::DEFAULT_PARAKEET_MODEL.to_string(),
                 api_key: None,
+                remote_model: None,
             }))
         }
         Err(e) => {
@@ -653,6 +664,7 @@ pub async fn api_save_transcript_config<R: Runtime>(
     provider: String,
     model: String,
     api_key: Option<String>,
+    remote_model: Option<String>,
     _auth_token: Option<String>,
 ) -> Result<serde_json::Value, String> {
     log_info!(
@@ -660,6 +672,26 @@ pub async fn api_save_transcript_config<R: Runtime>(
         &provider
     );
     let pool = state.db_manager.pool();
+
+    // remoteWhisper: `model` is the server base URL; the ASR model ID and the
+    // optional API key go to their own columns in one atomic upsert.
+    if provider == "remoteWhisper" {
+        let base_url = model.trim();
+        if base_url.is_empty() {
+            return Err("Server URL is required for the remote transcription provider.".to_string());
+        }
+        if let Err(e) =
+            SettingsRepository::save_remote_whisper_config(pool, base_url, remote_model.as_deref(), api_key.as_deref())
+                .await
+        {
+            log_error!("Failed to save remote whisper config: {}", e);
+            return Err(e.to_string());
+        }
+        log_info!("Successfully saved remote whisper transcription configuration.");
+        return Ok(
+            serde_json::json!({ "status": "success", "message": "Transcript configuration saved successfully" }),
+        );
+    }
 
     if let Err(e) = SettingsRepository::save_transcript_config(pool, &provider, &model).await {
         log_error!("Failed to save transcript config: {}", e);

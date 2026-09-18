@@ -74,6 +74,7 @@ pub async fn validate_transcription_model_ready<R: Runtime>(app: &AppHandle<R>) 
                 provider: "parakeet".to_string(),
                 model: crate::config::DEFAULT_PARAKEET_MODEL.to_string(),
                 api_key: None,
+                remote_model: None,
             }
         }
         Err(e) => {
@@ -82,6 +83,7 @@ pub async fn validate_transcription_model_ready<R: Runtime>(app: &AppHandle<R>) 
                 provider: "parakeet".to_string(),
                 model: crate::config::DEFAULT_PARAKEET_MODEL.to_string(),
                 api_key: None,
+                remote_model: None,
             }
         }
     };
@@ -137,18 +139,33 @@ pub async fn validate_transcription_model_ready<R: Runtime>(app: &AppHandle<R>) 
         }
         "remoteWhisper" => {
             // The "model" field is repurposed to hold the remote server's base URL
-            // (e.g. "http://192.168.1.100:8093") — see RemoteWhisperProvider.
+            // (e.g. "http://127.0.0.1:8080") — see RemoteWhisperProvider. The ASR
+            // model ID (e.g. "qwen3-asr-1.7b" on LocalAI) rides in `remote_model`.
             let base_url = config.model.clone();
-            info!("🔍 Validating remote Whisper server at {}...", base_url);
-            let provider = crate::audio::transcription::RemoteWhisperProvider::new(base_url.clone());
-            if provider.is_model_loaded().await {
-                info!("✅ Remote Whisper server at {} is reachable", base_url);
-                Ok(())
-            } else {
+            let model_id = config.remote_model.clone().unwrap_or_default();
+            info!(
+                "🔍 Validating remote Whisper server at {} (model '{}')...",
+                base_url, model_id
+            );
+            let provider = crate::audio::transcription::RemoteWhisperProvider::new(
+                base_url.clone(),
+                config.remote_model.clone(),
+                config.api_key.clone(),
+            );
+            let report = provider.health_report().await;
+            if !report.reachable {
                 Err(format!(
                     "Cannot reach remote Whisper server at {}. Check it is running and reachable from this machine.",
                     base_url
                 ))
+            } else if report.model_found == Some(false) {
+                Err(format!(
+                    "Remote ASR server at {} is reachable but model '{}' was not found in its /v1/models list. Check the model ID in Settings > Transcription.",
+                    base_url, model_id
+                ))
+            } else {
+                info!("✅ Remote Whisper server at {} is reachable", base_url);
+                Ok(())
             }
         }
         other => {
@@ -186,6 +203,7 @@ pub async fn get_or_init_transcription_engine<R: Runtime>(
                 provider: "parakeet".to_string(),
                 model: crate::config::DEFAULT_PARAKEET_MODEL.to_string(),
                 api_key: None,
+                remote_model: None,
             }
         }
         Err(e) => {
@@ -194,6 +212,7 @@ pub async fn get_or_init_transcription_engine<R: Runtime>(
                 provider: "parakeet".to_string(),
                 model: crate::config::DEFAULT_PARAKEET_MODEL.to_string(),
                 api_key: None,
+                remote_model: None,
             }
         }
     };
@@ -229,10 +248,15 @@ pub async fn get_or_init_transcription_engine<R: Runtime>(
             }
         }
         "remoteWhisper" => {
-            // The "model" field is repurposed to hold the remote server's base URL.
+            // The "model" field is repurposed to hold the remote server's base URL;
+            // `remote_model` carries the ASR model ID when one is configured.
             let base_url = config.model.clone();
             info!("🌐 Initializing remote Whisper provider ({})", base_url);
-            let provider = crate::audio::transcription::RemoteWhisperProvider::new(base_url);
+            let provider = crate::audio::transcription::RemoteWhisperProvider::new(
+                base_url,
+                config.remote_model.clone(),
+                config.api_key.clone(),
+            );
             Ok(TranscriptionEngine::Provider(std::sync::Arc::new(provider)))
         }
         "localWhisper" | _ => {

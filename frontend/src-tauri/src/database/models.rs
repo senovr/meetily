@@ -127,4 +127,15 @@ pub struct TranscriptSetting {
     #[sqlx(rename = "openaiApiKey")]
     #[serde(rename = "openaiApiKey")]
     pub openai_api_key: Option<String>,
+    /// Model ID for the remote OpenAI-compatible ASR provider (e.g.
+    /// "qwen3-asr-1.7b" on LocalAI). The `model` column holds the server base
+    /// URL for that provider — see RemoteWhisperProvider.
+    #[sqlx(rename = "remoteWhisperModel")]
+    #[serde(rename = "remoteWhisperModel")]
+    pub remote_whisper_model: Option<String>,
+    /// Optional bearer token for the remote ASR server. LocalAI commonly runs
+    /// without auth; a placeholder like "localai" is stored verbatim.
+    #[sqlx(rename = "remoteWhisperApiKey")]
+    #[serde(rename = "remoteWhisperApiKey")]
+    pub remote_whisper_api_key: Option<String>,
 }

@@ -33,6 +33,10 @@ pub struct ModelStatus {
     /// `transcription_provider` is "remoteWhisper".
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub remote_transcription_url: Option<String>,
+    /// Model ID for the remote transcription server (e.g. "qwen3-asr-1.7b"
+    /// on LocalAI). Optional: single-model faster-whisper servers ignore it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remote_transcription_model: Option<String>,
 }
 
 impl Default for OnboardingStatus {
@@ -47,6 +51,7 @@ impl Default for OnboardingStatus {
                 selected_summary_model: None,
                 transcription_provider: None,
                 remote_transcription_url: None,
+                remote_transcription_model: None,
             },
             last_updated: chrono::Utc::now().to_rfc3339(),
         }
@@ -190,6 +195,7 @@ pub async fn complete_onboarding<R: Runtime>(
     model: Option<String>,
     transcription_provider: Option<String>,
     remote_transcription_url: Option<String>,
+    remote_transcription_model: Option<String>,
 ) -> Result<(), String> {
     let pool = state.db_manager.pool();
 
@@ -219,10 +225,11 @@ pub async fn complete_onboarding<R: Runtime>(
 
     // ---- Transcription -----------------------------------------------------
     // Default stays local Parakeet; "remoteWhisper" reuses the `model` column of
-    // `transcript_settings` to carry the server base URL (see RemoteWhisperProvider).
+    // `transcript_settings` to carry the server base URL (see RemoteWhisperProvider),
+    // while the ASR model ID (e.g. "qwen3-asr-1.7b") gets its own column.
     let provider = transcription_provider.as_deref().unwrap_or("parakeet");
-    let (transcript_provider, transcript_model, parakeet_status) = if provider == REMOTE_WHISPER_PROVIDER
-    {
+    let is_remote = provider == REMOTE_WHISPER_PROVIDER;
+    let (transcript_provider, transcript_model, parakeet_status) = if is_remote {
         let url = remote_transcription_url
             .as_deref()
             .map(str::trim)
@@ -239,7 +246,21 @@ pub async fn complete_onboarding<R: Runtime>(
         )
     };
 
-    if let Err(e) =
+    if is_remote {
+        // No API key collected during onboarding — LocalAI commonly runs
+        // without auth; an optional key can be added later in Settings.
+        if let Err(e) = SettingsRepository::save_remote_whisper_config(
+            pool,
+            &transcript_model,
+            remote_transcription_model.as_deref(),
+            None,
+        )
+        .await
+        {
+            error!("Failed to save remote transcription config: {}", e);
+            return Err(format!("Failed to save remote transcription config: {}", e));
+        }
+    } else if let Err(e) =
         SettingsRepository::save_transcript_config(pool, transcript_provider, &transcript_model).await
     {
         error!("Failed to save transcription model config: {}", e);
@@ -263,6 +284,15 @@ pub async fn complete_onboarding<R: Runtime>(
     status.model_status.transcription_provider = Some(transcript_provider.to_string());
     status.model_status.remote_transcription_url = if transcript_provider == REMOTE_WHISPER_PROVIDER {
         Some(transcript_model.clone())
+    } else {
+        None
+    };
+    status.model_status.remote_transcription_model = if transcript_provider == REMOTE_WHISPER_PROVIDER {
+        remote_transcription_model
+            .as_deref()
+            .map(str::trim)
+            .map(str::to_string)
+            .filter(|m| !m.is_empty())
     } else {
         None
     };
