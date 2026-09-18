@@ -9,16 +9,6 @@ pub const DAILY_STANDUP: &str = include_str!("../../../templates/daily_standup.j
 /// Standard meeting notes template
 pub const STANDARD_MEETING: &str = include_str!("../../../templates/standard_meeting.json");
 
-/// Registry of all built-in templates
-///
-/// Maps template identifiers to their embedded JSON content
-pub fn get_builtin_templates() -> Vec<(&'static str, &'static str)> {
-    vec![
-        ("daily_standup", DAILY_STANDUP),
-        ("standard_meeting", STANDARD_MEETING),
-    ]
-}
-
 /// Get a built-in template by identifier
 ///
 /// # Arguments
