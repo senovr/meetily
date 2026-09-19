@@ -16,3 +16,20 @@ anyhow = "1.0"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 tokio = { version = "1.32.0", features = ["full"] }
+
+# Workspace-level release profile. Profiles in member manifests are ignored by
+# Cargo ("profiles for the non root package will be ignored") — llama-helper's
+# old [profile.release] never actually applied, and the main app ran on the
+# default profile (16 codegen units, no LTO). Fat LTO + single codegen unit is
+# the standard high-water release configuration; symbols are stripped to keep
+# the binaries lean.
+[profile.release]
+lto = "fat"
+codegen-units = 1
+strip = "symbols"
+
+# Preserve llama-helper's original intent (size-optimized sidecar) now that the
+# profile actually takes effect at the workspace root.
+[profile.release.package.llama-helper]
+opt-level = "s"
+
